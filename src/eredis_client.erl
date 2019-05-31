@@ -305,7 +305,24 @@ safe_send(Pid, Value) ->
 %% returns something we don't expect, we crash. Returns {ok, State} or
 %% {SomeError, Reason}.
 connect(State) ->
-    {ok, {AFamily, Addr}} = get_addr(State#state.host),
+    case get_addrs(State#state.host) of
+        {ok, Addrs} ->
+            try_connecting_to_one_of(Addrs, State, []);
+        {error, Reason} ->
+            {error, {get_addrs_failed, Reason}}
+    end.
+
+try_connecting_to_one_of([], _State, Errors) ->
+    {error, {try_connecting_to_one_of, Errors}};
+try_connecting_to_one_of([{AFamily, Addr}|Others], State, Errors) ->
+    case try_connecting(AFamily, Addr, State) of
+        {error, Reason} ->
+            try_connecting_to_one_of(Others, State, [{AFamily, Addr, Reason}|Errors]);
+        Result ->
+            Result
+    end.
+
+try_connecting(AFamily, Addr, State) ->
     case gen_tcp:connect(Addr, State#state.port,
                          [AFamily | ?SOCKET_OPTS], State#state.connect_timeout) of
         {ok, Socket} ->
@@ -324,18 +341,22 @@ connect(State) ->
             {error, {connection_error, Reason}}
     end.
 
-get_addr(Hostname) ->
+get_addrs(Hostname) ->
     case inet:parse_address(Hostname) of
-        {ok, {_,_,_,_} = Addr} ->         {ok, {inet, Addr}};
-        {ok, {_,_,_,_,_,_,_,_} = Addr} -> {ok, {inet6, Addr}};
+        {ok, {_,_,_,_} = Addr} ->         {ok, [{inet, Addr}]};
+        {ok, {_,_,_,_,_,_,_,_} = Addr} -> {ok, [{inet6, Addr}]};
         {error, einval} ->
             case inet:getaddr(Hostname, inet6) of
                  {error, _} ->
                      case inet:getaddr(Hostname, inet) of
-                         {ok, Addr}-> {ok, {inet, Addr}};
+                         {ok, Addr} -> {ok, [{inet, Addr}]};
                          {error, _} = Res -> Res
                      end;
-                 {ok, Addr} -> {ok, {inet6, Addr}}
+                 {ok, Addr6} ->
+                     case inet:getaddr(Hostname, inet) of
+                         {ok, Addr} -> {ok, [{inet6, Addr6}, {inet, Addr}]};
+                         {error, _} = Res -> Res
+                     end
             end
     end.
 
